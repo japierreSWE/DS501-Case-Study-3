@@ -1,0 +1,224 @@
+---
+title: "Final Case Study playground"
+output: pdf_document
+---
+
+```{r}
+#Reading and Cleaning Data
+library(mltools)
+library(data.table)
+
+readData = read.csv("liverdata.csv", col.names = c("age", "gender", "bilirubin_total", "bilirubin_direct", "alkphos", "sgpt", "sgot", "total_proteins", "albumin", "agratio", "is_liver_patient"))
+
+readData = readData[complete.cases(readData),]
+
+#liver_patient column was originally 1 and 2
+readData$is_liver_patient = readData$is_liver_patient - 1
+#readData$is_liver_patient <- as.numeric(ifelse(readData$is_liver_patient == 2, 1, 0))
+
+#standardize numerical data
+readData$bilirubin_total = scale(readData$bilirubin_total)
+readData$bilirubin_direct = scale(readData$bilirubin_direct)
+readData$age = scale(readData$age)
+readData$alkphos = scale(readData$alkphos)
+readData$sgpt = scale(readData$sgpt)
+readData$sgot = scale(readData$sgot)
+readData$total_proteins = scale(readData$total_proteins)
+readData$albumin = scale(readData$albumin)
+readData$agratio = scale(readData$agratio)
+
+
+#one hot encode gender
+readData$gender = as.factor(readData$gender)
+cleanData = one_hot(as.data.table(readData))
+cleanData$is_liver_patient = as.factor(cleanData$is_liver_patient)
+```
+
+```{r}
+#Conditional Density Plots
+library(ggplot2)
+cdplot(factor(is_liver_patient) ~ age, data=cleanData, main="Est. Probability of Liver Patients By Age", ylab='Is Liver Patient')
+
+qplot(gender_Male, ..count.., data=cleanData, geom="density", fill=factor(is_liver_patient), position="fill", main="Est. Probability of Liver Patients by Male Gender") + 
+  ylab('Probability')+theme(legend.position='bottom')
+
+qplot(gender_Female, ..count.., data=cleanData, geom="density", fill=factor(is_liver_patient), position="fill", main="Est. Probability of Liver Patients by Female Gender") + 
+  ylab('Probability')+theme(legend.position='bottom')
+
+cdplot(factor(is_liver_patient) ~ bilirubin_direct, data=cleanData, main=strwrap("Est. Probability of Liver Patients By Direct Bilirubin", 30), ylab='Is Liver Patient')
+
+cdplot(factor(is_liver_patient) ~ bilirubin_total, data=cleanData, main="Est. Probability of Liver Patients By Total Bilirubin", ylab='Is Liver Patient')
+
+cdplot(factor(is_liver_patient) ~ alkphos, data=cleanData, main="Est. Probability of Liver Patients By Alkphos", ylab='Is Liver Patient')
+
+cdplot(factor(is_liver_patient) ~ sgpt, data=cleanData, main="Est. Probability of Liver Patients By SGPT", ylab='Is Liver Patient')
+
+cdplot(factor(is_liver_patient) ~ sgot, data=cleanData, main="Est. Probability of Liver Patients By SGOT", ylab='Is Liver Patient')
+
+cdplot(factor(is_liver_patient) ~ total_proteins, data=cleanData, main=strwrap("Est. Probability of Liver Patients By Total Proteins", 30), ylab='Is Liver Patient')
+
+cdplot(factor(is_liver_patient) ~ albumin, data=cleanData, main="Est. Probability of Liver Patients By Albumin", ylab='Is Liver Patient')
+
+cdplot(factor(is_liver_patient) ~ agratio, data=cleanData, main="Est. Probability of Liver Patients By A/G Ratio", ylab='Is Liver Patient')
+
+
+qplot(sgot, ..count.., data=cleanData, geom="density", fill=factor(is_liver_patient), position="fill", main="Est. Probability of Liver Patients by SGOT") + 
+  ylab('Probability')+theme(legend.position='bottom')
+
+qplot(sgpt, ..count.., data=cleanData, geom="density", fill=factor(is_liver_patient), position="fill", main="Est. Probability of Liver Patients by SGPT") + 
+  ylab('Probability')+theme(legend.position='bottom')
+
+qplot(bilirubin_total, ..count.., data=cleanData, geom="density", fill=factor(is_liver_patient), position="fill", main="Est. Probability of Liver Patients by Total Bilirubin") + 
+  ylab('Probability')+theme(legend.position='bottom')
+```
+
+```{r}
+#Train-test split
+library(caret)
+library(ROSE)
+library(yardstick)
+set.seed(10)
+
+splitData = caret::createDataPartition(cleanData$is_liver_patient, p = 0.8, list=F, times=1)
+
+trainData = cleanData[splitData,]
+testData = cleanData[!row.names(cleanData) %in% row.names(trainData),]
+
+balancedTrainData = ovun.sample(is_liver_patient ~ ., data=trainData, method="both", N=400)$data
+```
+
+```{r}
+#Define function that carries out model testing.
+exec_model_testing = function(model) {
+  pred = predict(model, testData[,1:11], type="response")
+  pObject = ROCR::prediction(pred, testData$is_liver_patient)
+  
+  rocObj = ROCR::performance(pObject, measure="tpr", x.measure="fpr")
+  aucObj = ROCR::performance(pObject, measure="auc")  
+  plot(rocObj, main = paste("Area under the curve:", round(aucObj@y.values[[1]] ,4)))
+  
+  thresh = 0.5
+  facHat = cut(pred, breaks=c(-Inf, thresh, Inf), labels=c(0, 1))
+  cTab   = xtabs(~ is_liver_patient + facHat, data=testData)
+  addmargins(cTab)
+
+  cmDF = as.data.frame(cTab)
+
+  #Produce Precision/Recall
+  cat("Precision: ", yardstick::precision(cTab)$.estimate, "\n")
+  cat("Recall: ", yardstick::recall(cTab)$.estimate, "\n")
+  cat("F score: ", F_meas(cTab))
+
+  ggplot(cmDF, aes(x = is_liver_patient, y = facHat, fill = Freq)) +
+       geom_tile() + 
+       geom_text(aes(label = Freq), colour = "white") + 
+       labs(x = "Ground Truth", y = "Predicted Value")
+}
+```
+
+```{r}
+#Create random model
+library(ROCR)
+
+
+set.seed(70)
+randomTrainData = trainData
+randomTrainData$is_liver_patient = sample(c(0,1), replace=T, size=nrow(trainData))
+
+logRegRandom = glm(is_liver_patient ~ ., data=randomTrainData, family=binomial(link="logit"))
+
+exec_model_testing(logRegRandom)
+
+#random_pred = predict(logRegRandom, testData[,1:11], type="response")
+#randObject = ROCR::prediction(random_pred, testData$is_liver_patient)
+#rocRandObj = ROCR::performance(randObject, measure="tpr", x.measure="fpr")
+#aucRandObj = ROCR::performance(randObject, measure="auc")  
+#plot(rocRandObj, main = paste("Area under the curve:", round(aucRandObj@y.values[[1]] ,4)))
+```
+
+```{r}
+#Create a model that uses the following features:
+
+#Chose male gender. From the cdp's, it seems to have a relationship with is_liver_patient probability.
+
+#Men are less likely to be liver patients.
+
+lr1 = glm(is_liver_patient ~ gender_Male, data=balancedTrainData, family=binomial(link="logit"))
+
+exec_model_testing(lr1)
+
+```
+
+```{r}
+#Create a model that uses the following features:
+
+# male gender, agratio, age. From the cdp's, agration and age seem to have a relationship with probability of is_liver_patient.
+
+#Probability of liver patient increases as agratio increases.
+#Probability of liver patient increases as age increases.
+
+lr2 = glm(is_liver_patient ~ gender_Male + agratio + age, data=balancedTrainData, family=binomial(link="logit"))
+
+exec_model_testing(lr2)
+
+```
+```{r}
+#As I added more features, the AUC score increased. As a result, I decided to try using all features in a model.
+
+lr3 = glm(is_liver_patient ~ ., data=balancedTrainData, family=binomial(link="logit"))
+
+exec_model_testing(lr3)
+
+```
+
+
+```{r}
+#Decided to use feature importance to see whether we could optimize performance.
+#set.seed(70)
+library(mlbench)
+library(caret)
+control = trainControl(method="repeatedcv", number=10, repeats=3)
+
+model = train(is_liver_patient~., data=balancedTrainData, method="lvq",  trControl=control, na.action = na.exclude)
+# estimate variable importance
+importance = varImp(model, scale=FALSE)
+# summarize importance
+print(importance)
+# plot importance
+plot(importance)
+
+#Seems that the least important features are gender_Female, gender_Male, and total_proteins.
+
+```
+
+```{r}
+#Try to create a model that doesn't use the least significant features.
+
+#It resulted in a higher AUC score.
+lr4 = glm(is_liver_patient ~ bilirubin_total + bilirubin_direct + sgot + sgpt + alkphos + agratio + albumin + age, data=balancedTrainData, family=binomial(link="logit"))
+
+exec_model_testing(lr4)
+
+```
+
+```{r}
+library(yardstick)
+getAccuracy = function(model) {
+  pred = predict(model, testData[,1:11], type="response")
+  thresh = 0.5
+  facHat = cut(pred, breaks=c(-Inf, thresh, Inf), labels=c(0, 1))
+  cTab   = xtabs(~ is_liver_patient + facHat, data=testData)
+  addmargins(cTab)
+  return(accuracy(cTab)$.estimate)
+}
+
+randAcc = getAccuracy(logRegRandom)
+l1Acc = getAccuracy(lr1)
+l2Acc = getAccuracy(lr2)
+l3Acc = getAccuracy(lr3)
+l4Acc = getAccuracy(lr4)
+
+accuracyVector = c(randAcc, l1Acc, l2Acc, l3Acc, l4Acc)
+
+data.frame(modelname = c("Random Model", "Model 1", "Model 2", "Model 3", "Model 4"), accuracy = accuracyVector)
+```
